@@ -29,17 +29,17 @@ def _always(_ctx: DecisionContext) -> bool:
 def _participation_satisfied(ctx: DecisionContext) -> bool:
     """Check if minimum participation requirement is met.
 
-    Counts participants who have at least one response.
+    Counts participants who have submitted at least one response.
     """
-    active = sum(
-        1 for p in ctx.participants
-        if p in ctx.responses and len(ctx.responses[p]) > 0
-    )
-    return active >= ctx.min_participants
+    return len(ctx.responses) >= ctx.min_participants
 
 
 def _participation_not_satisfied(ctx: DecisionContext) -> bool:
     return not _participation_satisfied(ctx)
+
+
+def _participation_satisfied_and_no_conflicts(ctx: DecisionContext) -> bool:
+    return _participation_satisfied(ctx) and not _has_conflicts(ctx)
 
 
 def _has_conflicts(ctx: DecisionContext) -> bool:
@@ -56,6 +56,10 @@ def _has_validation_errors(ctx: DecisionContext) -> bool:
 
 def _no_validation_errors(ctx: DecisionContext) -> bool:
     return not _has_validation_errors(ctx)
+
+
+def _participation_satisfied_and_no_validation_errors(ctx: DecisionContext) -> bool:
+    return _participation_satisfied(ctx) and not _has_validation_errors(ctx)
 
 
 def _no_solution(ctx: DecisionContext) -> bool:
@@ -114,8 +118,11 @@ _TRANSITION_TABLE: list[_TransitionEntry] = [
     (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _has_conflicts,
      State.RESOLVING, [ActionType.RESOLVE_CONFLICT]),
 
-    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _no_conflicts,
+    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _participation_satisfied_and_no_conflicts,
      State.DECIDING, [ActionType.PROPOSE_DECISION]),
+
+    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _participation_not_satisfied,
+     State.COLLECTING, [ActionType.ASK_QUESTION]),
 
     # --- RESOLVING ---
     (State.RESOLVING, Event.RESPONSE_RECEIVED, _has_conflicts,
@@ -131,8 +138,11 @@ _TRANSITION_TABLE: list[_TransitionEntry] = [
     (State.VALIDATING, Event.VALIDATION_COMPLETED, _has_validation_errors,
      State.RESOLVING, [ActionType.RESOLVE_CONFLICT]),
 
-    (State.VALIDATING, Event.VALIDATION_COMPLETED, _no_validation_errors,
+    (State.VALIDATING, Event.VALIDATION_COMPLETED, _participation_satisfied_and_no_validation_errors,
      State.DECIDING, [ActionType.PROPOSE_DECISION]),
+
+    (State.VALIDATING, Event.VALIDATION_COMPLETED, _participation_not_satisfied,
+     State.COLLECTING, [ActionType.ASK_QUESTION]),
 
     # --- DECIDING ---
     (State.DECIDING, Event.VALIDATION_REQUIRED, _always,
