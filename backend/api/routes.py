@@ -33,6 +33,10 @@ def _confirmation_required(ctx: DecisionContext) -> bool:
         return True
     if len(ctx.objections) > 0:
         return True
+    if ctx.requires_explicit_approval:
+        return True
+    if ctx.requires_initiator_approval:
+        return True
     return False
 
 

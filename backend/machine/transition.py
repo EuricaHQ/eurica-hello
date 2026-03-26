@@ -88,8 +88,13 @@ def _confirmation_required(ctx: DecisionContext) -> bool:
     if len(ctx.objections) > 0:
         return True
 
-    # Explicit confirmation rule (stub — field to be added later)
-    # if ctx.requires_initiator_approval: return True
+    # Explicit approval requirement set on context
+    if ctx.requires_explicit_approval:
+        return True
+
+    # Initiator must approve before finalizing
+    if ctx.requires_initiator_approval:
+        return True
 
     # No fragility or uncertainty detected
     return False
