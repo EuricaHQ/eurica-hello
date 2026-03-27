@@ -234,11 +234,17 @@ def _has_critical_unresolved_participants(ctx: DecisionContext) -> bool:
                 "preferences": ctx.preferences,
                 "constraints": ctx.constraints,
                 "decision_rule": ctx.decision_rule,
+                "flexibility_signals": ctx.flexibility_signals,
+                "preference_strength_signals": ctx.preference_strength_signals,
+                "constraint_type_signals": ctx.constraint_type_signals,
             }
             result = llm.evaluate_critical_participants(compact_context, missing)
             critical = result.get("critical_participants", [])
             if isinstance(critical, list) and len(critical) > 0:
-                return True
+                # Subset validation: only accept names actually in missing
+                valid = [p for p in critical if p in missing]
+                if valid:
+                    return True
         except Exception:
             # LLM failure → fall back to rule-based result (False)
             pass

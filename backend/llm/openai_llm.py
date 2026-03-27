@@ -175,23 +175,46 @@ class OpenAILLM(LLM):
     ) -> dict:
         """Ask LLM which missing participants could still influence the outcome.
 
+        Uses Signal Layer v2 context for more precise reasoning.
         Advisory only. On any failure, returns empty list (safe default).
         """
         prompt = (
             "You are evaluating a group decision.\n"
             "\n"
-            f"Decision question: {context.get('question', '(not set)')}\n"
+            "== Decision Context ==\n"
+            f"Question: {context.get('question', '(not set)')}\n"
             f"Decision rule: {context.get('decision_rule', 'consent')}\n"
+            f"Participants: {context.get('participants', [])}\n"
             f"Current preferences: {context.get('preferences', [])}\n"
             f"Current constraints: {context.get('constraints', [])}\n"
-            f"Missing participants (have not responded): {missing}\n"
+            f"Missing participants (have NOT responded): {missing}\n"
             "\n"
-            "Which of the missing participants could still influence "
-            "the decision outcome? Consider whether their input could:\n"
-            "- change the winning option\n"
-            "- block consensus\n"
-            "- introduce new constraints\n"
-            "- affect feasibility\n"
+            "== Signal Analysis ==\n"
+            f"Flexibility signals from responded participants: "
+            f"{context.get('flexibility_signals', [])}\n"
+            f"Preference strength signals: "
+            f"{context.get('preference_strength_signals', [])}\n"
+            f"Constraint type signals: "
+            f"{context.get('constraint_type_signals', [])}\n"
+            "\n"
+            "== Reasoning Rules ==\n"
+            "Use these rules to assess which missing participants "
+            "could still meaningfully change the outcome:\n"
+            "\n"
+            "- High flexibility + weak/no preferences from responded "
+            "participants → missing input is LESS likely to matter\n"
+            "- Hard constraints present → missing input is MORE likely "
+            "to matter (feasibility may change)\n"
+            "- Strong preferences + low flexibility → missing input is "
+            "MORE likely to matter (high tension, outcome sensitive)\n"
+            "- Stable majority already locked → missing input is LESS "
+            "likely to matter, unless decision is fragile\n"
+            "- Consent rule → any missing participant could still object, "
+            "but only flag them if signals suggest real risk\n"
+            "\n"
+            "== Task ==\n"
+            "Which of the MISSING participants could still meaningfully "
+            "change the decision outcome?\n"
             "\n"
             "Return ONLY a JSON object:\n"
             '{"critical_participants": ["name1", "name2"]}\n'
@@ -199,6 +222,7 @@ class OpenAILLM(LLM):
             "If none are critical, return:\n"
             '{"critical_participants": []}\n'
             "\n"
+            "IMPORTANT: Only return names from the missing list. "
             "JSON ONLY. No explanation."
         )
 
