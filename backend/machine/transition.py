@@ -78,17 +78,50 @@ def _is_infeasible(ctx: DecisionContext) -> bool:
     return False
 
 
+def _has_critical_unresolved_participants(ctx: DecisionContext) -> bool:
+    """Guard per spec v2.9.2 section 30.
+
+    A participant is critical unresolved if their missing input could
+    still affect feasibility, participation constraints, or the
+    decision rule outcome.
+
+    MVP approximation:
+    - participant has no response yet (not in ctx.responses)
+    - AND decision is not yet stable (no unanimous preference)
+
+    A stable decision = all expressed preferences converge to a single
+    value.  If preferences diverge or are empty, the decision is
+    unstable and missing input is still relevant.
+    """
+    responded = set(ctx.responses.keys())
+    unresolved = [p for p in ctx.participants if p not in responded]
+
+    if not unresolved:
+        return False
+
+    # Decision stability: unanimous preferences → stable
+    unique_prefs = set(ctx.preferences)
+    decision_stable = len(unique_prefs) == 1 and len(ctx.preferences) > 0
+
+    if decision_stable:
+        return False
+
+    return True
+
+
 def _solution_found(ctx: DecisionContext) -> bool:
     """True when aggregation produced a viable solution.
 
-    Currently: participation satisfied AND no conflicts AND no
-    validation needed AND not infeasible.
+    Per spec v2.9.2 section 28 (Decision Readiness):
+      solution_found AND participation_satisfied
+      AND NOT has_critical_unresolved_participants
     """
     return (
         _participation_satisfied(ctx)
         and not _has_conflict(ctx)
         and not _needs_validation(ctx)
         and not _is_infeasible(ctx)
+        and not _has_critical_unresolved_participants(ctx)
     )
 
 
