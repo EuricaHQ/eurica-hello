@@ -52,13 +52,17 @@ def _derive_system_event(
 
     Returns None if no system event should fire.
     """
+    # COLLECTING: check if participation is satisfied → trigger aggregation
+    if state == State.COLLECTING:
+        return Event.AGGREGATION_COMPLETED
+
     if state == State.AGGREGATING:
         return Event.AGGREGATION_COMPLETED
 
     if state == State.VALIDATING:
         return Event.VALIDATION_COMPLETED
 
-    # Spec v2.8.1: auto-finalize if no confirmation required
+    # Auto-finalize if no confirmation required (clarified interpretation)
     if state == State.DECIDING and not _confirmation_required(context):
         return Event.DECISION_CONFIRMED
 

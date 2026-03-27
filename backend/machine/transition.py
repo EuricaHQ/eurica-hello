@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-from dataclasses import replace
-
 from machine.states import State
 from machine.events import Event
 from machine.context import DecisionContext
@@ -26,6 +24,19 @@ def _always(_ctx: DecisionContext) -> bool:
     return True
 
 
+def _clarification_complete(ctx: DecisionContext) -> bool:
+    """Stub guard: true when the question is sufficiently clear.
+
+    Will be refined when LLM-driven clarification scoring is available.
+    Currently: true if a question has been set (first response received).
+    """
+    return bool(ctx.question)
+
+
+def _clarification_not_complete(ctx: DecisionContext) -> bool:
+    return not _clarification_complete(ctx)
+
+
 def _participation_satisfied(ctx: DecisionContext) -> bool:
     """Check if minimum participation requirement is met.
 
@@ -38,40 +49,58 @@ def _participation_not_satisfied(ctx: DecisionContext) -> bool:
     return not _participation_satisfied(ctx)
 
 
-def _participation_satisfied_and_no_conflicts(ctx: DecisionContext) -> bool:
-    return _participation_satisfied(ctx) and not _has_conflicts(ctx)
-
-
-def _has_conflicts(ctx: DecisionContext) -> bool:
+def _has_conflict(ctx: DecisionContext) -> bool:
     return len(ctx.conflicts) > 0
 
 
-def _no_conflicts(ctx: DecisionContext) -> bool:
-    return not _has_conflicts(ctx)
+def _needs_validation(ctx: DecisionContext) -> bool:
+    """True when constraints are present and need checking."""
+    return len(ctx.constraints) > 0
 
 
-def _has_validation_errors(ctx: DecisionContext) -> bool:
-    return len(ctx.validation_errors) > 0
+def _is_avoidance(ctx: DecisionContext) -> bool:
+    """Stub guard: true when avoidance behavior is detected.
+
+    Currently checks if AVOIDANCE_DETECTED event context has been set.
+    Will be refined with LLM-driven avoidance detection.
+    """
+    # Avoidance is signaled by the event arriving; guard confirms it.
+    # For AGGREGATION_COMPLETED routing, this is a stub — avoidance
+    # is primarily detected via the AVOIDANCE_DETECTED event path.
+    return False
 
 
-def _no_validation_errors(ctx: DecisionContext) -> bool:
-    return not _has_validation_errors(ctx)
+def _is_infeasible(ctx: DecisionContext) -> bool:
+    """True when aggregation found no viable solution.
+
+    Stub: will be refined when aggregation semantics evolve.
+    """
+    return False
 
 
-def _participation_satisfied_and_no_validation_errors(ctx: DecisionContext) -> bool:
-    return _participation_satisfied(ctx) and not _has_validation_errors(ctx)
+def _solution_found(ctx: DecisionContext) -> bool:
+    """True when aggregation produced a viable solution.
+
+    Currently: participation satisfied AND no conflicts AND no
+    validation needed AND not infeasible.
+    """
+    return (
+        _participation_satisfied(ctx)
+        and not _has_conflict(ctx)
+        and not _needs_validation(ctx)
+        and not _is_infeasible(ctx)
+    )
 
 
 def _confirmation_required(ctx: DecisionContext) -> bool:
-    """Confirmation guard per spec v2.8.1.
+    """Confirmation guard per spec v2.9 section 24.
 
     confirmation_required = true if:
+        - decision rule requires it
         - decision is fragile (missing critical participants,
           narrow majority, weak aggregation, low confidence)
-        - OR critical uncertainty exists (unresolved uncertainty,
-          contradictory signals)
-        - OR explicit confirmation rule set on context
-        - OR initiator approval is required
+        - critical uncertainty exists
+        - initiator approval required
 
     Stub: only evaluates structurally available indicators.
     Full fragility/confidence scoring comes later.
@@ -104,110 +133,174 @@ def _confirmation_not_required(ctx: DecisionContext) -> bool:
     return not _confirmation_required(ctx)
 
 
-def _no_solution(ctx: DecisionContext) -> bool:
-    """Stub guard: true when aggregation found no viable solution.
-
-    Will be refined when AGGREGATION_COMPLETED is split into
-    finer-grained events (solution_found, no_solution, etc.).
-    """
-    return False
-
-
 # ---------------------------------------------------------------------------
-# Transition table
+# Transition table — spec v2.9 section 28
 #
 # Each entry: (state, event, guard) → (next_state, actions)
 #
 # Guards are evaluated top-to-bottom. First match wins.
 # Handlers do NOT contain control flow — only the table decides.
+#
+# Every (state, event) pair is explicitly handled.
+# Terminal states (DECIDED, INFEASIBLE) are handled separately.
 # ---------------------------------------------------------------------------
 
 _TransitionEntry = tuple[State, Event, Guard, State, list[ActionType]]
 
 _TRANSITION_TABLE: list[_TransitionEntry] = [
-    # --- CLARIFYING ---
-    (State.CLARIFYING, Event.RESPONSE_RECEIVED, _always,
-     State.COLLECTING, [ActionType.ASK_QUESTION]),
 
-    # --- COLLECTING ---
-    (State.COLLECTING, Event.RESPONSE_RECEIVED, _participation_satisfied,
+    # ===== CLARIFYING =====
+    # RESPONSE_RECEIVED
+    (State.CLARIFYING, Event.RESPONSE_RECEIVED, _clarification_complete,
+     State.COLLECTING, [ActionType.ASK_QUESTION]),
+    (State.CLARIFYING, Event.RESPONSE_RECEIVED, _clarification_not_complete,
+     State.CLARIFYING, [ActionType.ASK_QUESTION]),
+    # Self-transitions for irrelevant events
+    (State.CLARIFYING, Event.AGGREGATION_COMPLETED, _always,
+     State.CLARIFYING, []),
+    (State.CLARIFYING, Event.VALIDATION_COMPLETED, _always,
+     State.CLARIFYING, []),
+    (State.CLARIFYING, Event.DECISION_CONFIRMED, _always,
+     State.CLARIFYING, []),
+    (State.CLARIFYING, Event.DECISION_REJECTED, _always,
+     State.CLARIFYING, []),
+    (State.CLARIFYING, Event.AVOIDANCE_DETECTED, _always,
+     State.CLARIFYING, []),
+
+    # ===== COLLECTING =====
+    # RESPONSE_RECEIVED — always stay (aggregation is event-driven)
+    (State.COLLECTING, Event.RESPONSE_RECEIVED, _always,
+     State.COLLECTING, [ActionType.ASK_QUESTION]),
+    # AGGREGATION_COMPLETED — the path to AGGREGATING
+    (State.COLLECTING, Event.AGGREGATION_COMPLETED, _participation_satisfied,
      State.AGGREGATING, [ActionType.AGGREGATE]),
-
-    (State.COLLECTING, Event.RESPONSE_RECEIVED, _participation_not_satisfied,
-     State.COLLECTING, [ActionType.ASK_QUESTION]),
-
-    # --- AGGREGATING (structural hub) ---
-    # Aggregating is the central routing state. All paths from
-    # collecting lead here, and it fans out to resolving, validating,
-    # avoiding, deciding, or infeasible based on guards and events.
-    #
-    # NOTE: AGGREGATION_COMPLETED currently serves as a broad event.
-    # It will later be split into finer-grained events (solution_found,
-    # no_solution, etc.) as aggregation semantics evolve.
-
-    (State.AGGREGATING, Event.CONFLICT_DETECTED, _always,
-     State.RESOLVING, [ActionType.RESOLVE_CONFLICT]),
-
-    (State.AGGREGATING, Event.AVOIDANCE_DETECTED, _always,
+    (State.COLLECTING, Event.AGGREGATION_COMPLETED, _participation_not_satisfied,
+     State.COLLECTING, []),
+    # Self-transitions for irrelevant events
+    (State.COLLECTING, Event.VALIDATION_COMPLETED, _always,
+     State.COLLECTING, []),
+    (State.COLLECTING, Event.DECISION_CONFIRMED, _always,
+     State.COLLECTING, []),
+    (State.COLLECTING, Event.DECISION_REJECTED, _always,
+     State.COLLECTING, []),
+    # AVOIDANCE_DETECTED — guarded
+    (State.COLLECTING, Event.AVOIDANCE_DETECTED, _is_avoidance,
      State.AVOIDING, [ActionType.ADDRESS_AVOIDANCE]),
+    (State.COLLECTING, Event.AVOIDANCE_DETECTED, _always,
+     State.COLLECTING, []),
 
-    (State.AGGREGATING, Event.VALIDATION_REQUIRED, _always,
-     State.VALIDATING, [ActionType.VALIDATE_CONSTRAINT]),
-
-    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _no_solution,
+    # ===== AGGREGATING (structural hub) =====
+    # RESPONSE_RECEIVED — self-transition
+    (State.AGGREGATING, Event.RESPONSE_RECEIVED, _always,
+     State.AGGREGATING, []),
+    # AGGREGATION_COMPLETED — primary routing event
+    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _is_infeasible,
      State.INFEASIBLE, [ActionType.MARK_INFEASIBLE]),
-
-    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _has_conflicts,
+    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _needs_validation,
+     State.VALIDATING, [ActionType.VALIDATE_CONSTRAINT]),
+    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _has_conflict,
      State.RESOLVING, [ActionType.RESOLVE_CONFLICT]),
-
-    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _participation_satisfied_and_no_conflicts,
+    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _is_avoidance,
+     State.AVOIDING, [ActionType.ADDRESS_AVOIDANCE]),
+    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _solution_found,
      State.DECIDING, [ActionType.PROPOSE_DECISION]),
-
-    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _participation_not_satisfied,
+    # Fallback: no solution criteria met → back to collecting
+    (State.AGGREGATING, Event.AGGREGATION_COMPLETED, _always,
      State.COLLECTING, [ActionType.ASK_QUESTION]),
+    # VALIDATION_COMPLETED — self-transition
+    (State.AGGREGATING, Event.VALIDATION_COMPLETED, _always,
+     State.AGGREGATING, []),
+    # DECISION_CONFIRMED — self-transition
+    (State.AGGREGATING, Event.DECISION_CONFIRMED, _always,
+     State.AGGREGATING, []),
+    # DECISION_REJECTED — self-transition
+    (State.AGGREGATING, Event.DECISION_REJECTED, _always,
+     State.AGGREGATING, []),
+    # AVOIDANCE_DETECTED — guarded
+    (State.AGGREGATING, Event.AVOIDANCE_DETECTED, _is_avoidance,
+     State.AVOIDING, [ActionType.ADDRESS_AVOIDANCE]),
+    (State.AGGREGATING, Event.AVOIDANCE_DETECTED, _always,
+     State.AGGREGATING, []),
 
-    # --- RESOLVING ---
-    (State.RESOLVING, Event.RESPONSE_RECEIVED, _has_conflicts,
+    # ===== RESOLVING =====
+    # RESPONSE_RECEIVED — always self-transition
+    (State.RESOLVING, Event.RESPONSE_RECEIVED, _always,
      State.RESOLVING, [ActionType.RESOLVE_CONFLICT]),
-
-    (State.RESOLVING, Event.RESPONSE_RECEIVED, _no_conflicts,
+    # AGGREGATION_COMPLETED — return path to AGGREGATING
+    (State.RESOLVING, Event.AGGREGATION_COMPLETED, _always,
      State.AGGREGATING, [ActionType.AGGREGATE]),
+    # Self-transitions for irrelevant events
+    (State.RESOLVING, Event.VALIDATION_COMPLETED, _always,
+     State.RESOLVING, []),
+    (State.RESOLVING, Event.DECISION_CONFIRMED, _always,
+     State.RESOLVING, []),
+    (State.RESOLVING, Event.DECISION_REJECTED, _always,
+     State.RESOLVING, []),
+    # AVOIDANCE_DETECTED — guarded
+    (State.RESOLVING, Event.AVOIDANCE_DETECTED, _is_avoidance,
+     State.AVOIDING, [ActionType.ADDRESS_AVOIDANCE]),
+    (State.RESOLVING, Event.AVOIDANCE_DETECTED, _always,
+     State.RESOLVING, []),
 
-    # --- VALIDATING ---
-    (State.VALIDATING, Event.VALIDATION_COMPLETED, _no_solution,
-     State.INFEASIBLE, [ActionType.MARK_INFEASIBLE]),
+    # ===== VALIDATING =====
+    # RESPONSE_RECEIVED — self-transition
+    (State.VALIDATING, Event.RESPONSE_RECEIVED, _always,
+     State.VALIDATING, []),
+    # AGGREGATION_COMPLETED — self-transition
+    (State.VALIDATING, Event.AGGREGATION_COMPLETED, _always,
+     State.VALIDATING, []),
+    # VALIDATION_COMPLETED — always returns to AGGREGATING
+    (State.VALIDATING, Event.VALIDATION_COMPLETED, _always,
+     State.AGGREGATING, [ActionType.AGGREGATE]),
+    # Self-transitions for irrelevant events
+    (State.VALIDATING, Event.DECISION_CONFIRMED, _always,
+     State.VALIDATING, []),
+    (State.VALIDATING, Event.DECISION_REJECTED, _always,
+     State.VALIDATING, []),
+    # AVOIDANCE_DETECTED — guarded
+    (State.VALIDATING, Event.AVOIDANCE_DETECTED, _is_avoidance,
+     State.AVOIDING, [ActionType.ADDRESS_AVOIDANCE]),
+    (State.VALIDATING, Event.AVOIDANCE_DETECTED, _always,
+     State.VALIDATING, []),
 
-    (State.VALIDATING, Event.VALIDATION_COMPLETED, _has_validation_errors,
-     State.RESOLVING, [ActionType.RESOLVE_CONFLICT]),
-
-    (State.VALIDATING, Event.VALIDATION_COMPLETED, _participation_satisfied_and_no_validation_errors,
-     State.DECIDING, [ActionType.PROPOSE_DECISION]),
-
-    (State.VALIDATING, Event.VALIDATION_COMPLETED, _participation_not_satisfied,
-     State.COLLECTING, [ActionType.ASK_QUESTION]),
-
-    # --- DECIDING ---
-    # Confirmation guard (spec v2.8.1):
-    # If confirmation NOT required → auto-finalize via system event
-    # If confirmation required → wait for user CONFIRMED/REJECTED
-    (State.DECIDING, Event.DECISION_CONFIRMED, _confirmation_not_required,
-     State.DECIDED, [ActionType.FINALIZE_DECISION]),
-
-    (State.DECIDING, Event.DECISION_CONFIRMED, _confirmation_required,
-     State.DECIDED, [ActionType.FINALIZE_DECISION]),
-
-    (State.DECIDING, Event.DECISION_REJECTED, _always,
-     State.COLLECTING, [ActionType.ASK_QUESTION]),
-
-    (State.DECIDING, Event.VALIDATION_REQUIRED, _always,
-     State.VALIDATING, [ActionType.VALIDATE_CONSTRAINT]),
-
-    (State.DECIDING, Event.CONFLICT_DETECTED, _always,
-     State.RESOLVING, [ActionType.RESOLVE_CONFLICT]),
-
-    # --- AVOIDING ---
+    # ===== AVOIDING =====
+    # RESPONSE_RECEIVED — self-transition
     (State.AVOIDING, Event.RESPONSE_RECEIVED, _always,
-     State.COLLECTING, [ActionType.ASK_QUESTION]),
+     State.AVOIDING, [ActionType.ADDRESS_AVOIDANCE]),
+    # AGGREGATION_COMPLETED — return path to AGGREGATING
+    (State.AVOIDING, Event.AGGREGATION_COMPLETED, _always,
+     State.AGGREGATING, [ActionType.AGGREGATE]),
+    # Self-transitions for irrelevant events
+    (State.AVOIDING, Event.VALIDATION_COMPLETED, _always,
+     State.AVOIDING, []),
+    (State.AVOIDING, Event.DECISION_CONFIRMED, _always,
+     State.AVOIDING, []),
+    (State.AVOIDING, Event.DECISION_REJECTED, _always,
+     State.AVOIDING, []),
+    (State.AVOIDING, Event.AVOIDANCE_DETECTED, _always,
+     State.AVOIDING, []),
+
+    # ===== DECIDING =====
+    # RESPONSE_RECEIVED — self-transition
+    (State.DECIDING, Event.RESPONSE_RECEIVED, _always,
+     State.DECIDING, []),
+    # AGGREGATION_COMPLETED — self-transition
+    (State.DECIDING, Event.AGGREGATION_COMPLETED, _always,
+     State.DECIDING, []),
+    # VALIDATION_COMPLETED — self-transition
+    (State.DECIDING, Event.VALIDATION_COMPLETED, _always,
+     State.DECIDING, []),
+    # DECISION_CONFIRMED — always leads to DECIDED (spec v2.9.1)
+    # confirmation_required controls HOW the event is triggered
+    # (system-internal vs user-external), not IF the transition works.
+    (State.DECIDING, Event.DECISION_CONFIRMED, _always,
+     State.DECIDED, [ActionType.FINALIZE_DECISION]),
+    # DECISION_REJECTED — back to AGGREGATING (spec v2.9)
+    (State.DECIDING, Event.DECISION_REJECTED, _always,
+     State.AGGREGATING, [ActionType.AGGREGATE]),
+    # AVOIDANCE_DETECTED — self-transition
+    (State.DECIDING, Event.AVOIDANCE_DETECTED, _always,
+     State.DECIDING, []),
 ]
 
 
@@ -228,10 +321,10 @@ def transition(
     This function is pure: no I/O, no LLM calls, no external systems.
 
     Evaluation order:
-    1. Terminal state check
+    1. Terminal state check (absorbing — all events → self)
     2. Walk table top-to-bottom
     3. First matching (state, event, guard) wins
-    4. No match → stay in current state
+    4. No match → raise (spec v2.9: missing transitions are forbidden)
     """
     # Terminal states are absorbing — no exit transitions
     if state in _TERMINAL_STATES:
@@ -243,5 +336,9 @@ def transition(
             actions = [Action(at) for at in action_types]
             return (next_state, actions, context)
 
-    # No valid transition — stay in current state, no actions
-    return (state, [], context)
+    # Spec v2.9: no implicit no-op allowed. Every (state, event) must
+    # be handled. If we reach here, the table is incomplete.
+    raise ValueError(
+        f"No transition defined for ({state.value}, {event.value}). "
+        f"Spec v2.9 requires explicit handling of all (state, event) pairs."
+    )

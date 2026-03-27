@@ -56,10 +56,8 @@ def map_signals_to_event(signals: Signals) -> Event:
     if signals.avoidance_signal:
         return Event.AVOIDANCE_DETECTED
 
-    if signals.conflict_signal or len(signals.objections) > 0:
-        return Event.CONFLICT_DETECTED
-
-    if len(signals.constraints) > 0:
-        return Event.VALIDATION_REQUIRED
+    # Conflict and constraint signals are NOT separate events (spec v2.9).
+    # They are merged into context and assessed by guards on
+    # AGGREGATION_COMPLETED. All content input maps to RESPONSE_RECEIVED.
 
     return Event.RESPONSE_RECEIVED

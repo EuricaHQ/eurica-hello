@@ -1,6 +1,6 @@
-"""Validation tests for the confirmation guard (spec v2.8.1).
+"""Validation tests for the confirmation guard (spec v2.9 aligned).
 
-Run: python test_confirmation.py
+Run: python3 test_confirmation.py
 """
 
 from dataclasses import replace
@@ -27,11 +27,11 @@ def test_consent_clean_auto_decide():
     ctx = _base_context()
     assert ctx.decision_rule == "consent"
 
-    # Simulate system-event: AGGREGATION_COMPLETED in AGGREGATING → DECIDING
+    # AGGREGATION_COMPLETED in AGGREGATING → DECIDING
     state, actions, ctx = transition(State.AGGREGATING, Event.AGGREGATION_COMPLETED, ctx)
     assert state == State.DECIDING, f"expected deciding, got {state.value}"
 
-    # System-event: DECISION_CONFIRMED (no confirmation required)
+    # DECISION_CONFIRMED (no confirmation required → auto-confirmed)
     state, actions, ctx = transition(State.DECIDING, Event.DECISION_CONFIRMED, ctx)
     assert state == State.DECIDED, f"expected decided, got {state.value}"
 
@@ -48,17 +48,20 @@ def test_majority_clean_auto_decide():
 
 
 def test_uncertainty_requires_confirmation():
-    """Uncertainty present → confirmation_required → stays in DECIDING."""
+    """Uncertainty present → confirmation_required → stays in DECIDING until confirmed."""
     ctx = replace(_base_context(), uncertainties=["budget unclear"])
 
     state, actions, ctx = transition(State.AGGREGATING, Event.AGGREGATION_COMPLETED, ctx)
     assert state == State.DECIDING, f"expected deciding, got {state.value}"
 
-    # No system-event should auto-confirm. Simulate: no DECISION_CONFIRMED fired.
-    # Instead, send RESPONSE_RECEIVED — machine has no transition for this in DECIDING.
+    # RESPONSE_RECEIVED self-transitions in DECIDING (spec v2.9)
     state, actions, ctx = transition(State.DECIDING, Event.RESPONSE_RECEIVED, ctx)
     assert state == State.DECIDING, f"expected deciding (stuck), got {state.value}"
     assert actions == [], "expected no actions"
+
+    # Explicit DECISION_CONFIRMED still finalizes (both paths → DECIDED)
+    state, actions, ctx = transition(State.DECIDING, Event.DECISION_CONFIRMED, ctx)
+    assert state == State.DECIDED, f"expected decided, got {state.value}"
 
 
 def test_initiator_approval_requires_confirmation():
@@ -68,7 +71,7 @@ def test_initiator_approval_requires_confirmation():
     state, actions, ctx = transition(State.AGGREGATING, Event.AGGREGATION_COMPLETED, ctx)
     assert state == State.DECIDING, f"expected deciding, got {state.value}"
 
-    # Same check: unrelated event should not advance
+    # Unrelated event: self-transition
     state, actions, ctx = transition(State.DECIDING, Event.RESPONSE_RECEIVED, ctx)
     assert state == State.DECIDING, f"expected deciding (stuck), got {state.value}"
     assert actions == [], "expected no actions"
