@@ -1,13 +1,14 @@
 """Tests for LLM advisory layer on has_critical_unresolved_participants.
 
+LLM is injected via ctx.services["llm"] (dependency injection).
+No global state. No real API calls.
+
 Verifies:
 - rule-based False + LLM says critical → True (escalation)
 - rule-based True → LLM not called (short-circuit)
 - LLM failure → fallback to rule-based result
 - LLM returns invalid data → safe fallback
-- advisor can be disabled (set to None)
-
-Uses mock LLM functions — no real API calls.
+- no LLM in services → rule-based only
 
 Run: python3 test_critical_llm_advisory.py
 """
@@ -16,22 +17,116 @@ from machine.context import DecisionContext
 from machine.transition import (
     _has_critical_unresolved_participants,
     _has_critical_unresolved_rule_based,
-    set_critical_participant_advisor,
 )
-
-
-def _teardown():
-    """Reset advisor to None after each test."""
-    set_critical_participant_advisor(None)
+from llm.interface import LLM
 
 
 # ---------------------------------------------------------------------------
-# Context where rule-based returns False
-# (majority locked: Italian has 3/5, threshold 3, eve missing)
+# Mock LLM implementations for testing
 # ---------------------------------------------------------------------------
 
-def _majority_locked_ctx():
-    return DecisionContext(
+class _MockLLMEscalates(LLM):
+    """Always flags the first missing participant as critical."""
+
+    def interpret(self, message, context):
+        return {}
+
+    def generate(self, state, context):
+        return ""
+
+    def evaluate_critical_participants(self, context, missing):
+        return {"critical_participants": missing[:1]}
+
+
+class _MockLLMAgrees(LLM):
+    """Always agrees no one is critical."""
+
+    def interpret(self, message, context):
+        return {}
+
+    def generate(self, state, context):
+        return ""
+
+    def evaluate_critical_participants(self, context, missing):
+        return {"critical_participants": []}
+
+
+class _MockLLMCrashes(LLM):
+    """Always raises an exception."""
+
+    def interpret(self, message, context):
+        return {}
+
+    def generate(self, state, context):
+        return ""
+
+    def evaluate_critical_participants(self, context, missing):
+        raise RuntimeError("API timeout")
+
+
+class _MockLLMBadType(LLM):
+    """Returns non-list for critical_participants."""
+
+    def interpret(self, message, context):
+        return {}
+
+    def generate(self, state, context):
+        return ""
+
+    def evaluate_critical_participants(self, context, missing):
+        return {"critical_participants": "eve"}
+
+
+class _MockLLMNoKey(LLM):
+    """Returns dict without expected key."""
+
+    def interpret(self, message, context):
+        return {}
+
+    def generate(self, state, context):
+        return ""
+
+    def evaluate_critical_participants(self, context, missing):
+        return {"other_key": ["eve"]}
+
+
+class _MockLLMReturnsNone(LLM):
+    """Returns None instead of dict."""
+
+    def interpret(self, message, context):
+        return {}
+
+    def generate(self, state, context):
+        return ""
+
+    def evaluate_critical_participants(self, context, missing):
+        return None
+
+
+class _MockLLMTracked(LLM):
+    """Tracks whether evaluate_critical_participants was called."""
+
+    def __init__(self):
+        self.call_count = 0
+
+    def interpret(self, message, context):
+        return {}
+
+    def generate(self, state, context):
+        return ""
+
+    def evaluate_critical_participants(self, context, missing):
+        self.call_count += 1
+        return {"critical_participants": []}
+
+
+# ---------------------------------------------------------------------------
+# Context helpers
+# ---------------------------------------------------------------------------
+
+def _majority_locked_ctx(**overrides):
+    """Rule-based returns False (majority locked: Italian 3/5)."""
+    base = dict(
         question="Where to eat?",
         participants=["alice", "bob", "carol", "dave", "eve"],
         min_participants=3,
@@ -41,190 +136,97 @@ def _majority_locked_ctx():
             "carol": ["Italian"], "dave": ["Thai"],
         },
         preferences=["Italian", "Italian", "Italian", "Thai"],
+        services={},
     )
+    base.update(overrides)
+    return DecisionContext(**base)
 
 
-# ---------------------------------------------------------------------------
-# Context where rule-based returns True (consent + missing)
-# ---------------------------------------------------------------------------
-
-def _consent_missing_ctx():
-    return DecisionContext(
+def _consent_missing_ctx(**overrides):
+    """Rule-based returns True (consent + missing participant)."""
+    base = dict(
         question="Where to eat?",
         participants=["alice", "bob", "carol"],
         min_participants=2,
         decision_rule="consent",
         responses={"alice": ["Italian"], "carol": ["Thai"]},
         preferences=["Italian", "Thai"],
+        services={},
     )
+    base.update(overrides)
+    return DecisionContext(**base)
 
 
 # ---------------------------------------------------------------------------
-# Test: rule-based False + LLM escalates → True
+# Tests
 # ---------------------------------------------------------------------------
 
 def test_llm_escalates_when_rule_says_false():
     """LLM flags eve as critical despite majority being locked."""
-    ctx = _majority_locked_ctx()
+    ctx = _majority_locked_ctx(services={"llm": _MockLLMEscalates()})
 
-    # Precondition: rule-based says False
     assert not _has_critical_unresolved_rule_based(ctx)
+    assert _has_critical_unresolved_participants(ctx) is True
 
-    # Mock LLM that flags eve
-    def mock_advisor(context, missing):
-        assert "eve" in missing
-        return {"critical_participants": ["eve"]}
-
-    set_critical_participant_advisor(mock_advisor)
-    try:
-        assert _has_critical_unresolved_participants(ctx) is True
-    finally:
-        _teardown()
-
-
-# ---------------------------------------------------------------------------
-# Test: rule-based False + LLM says no one critical → False
-# ---------------------------------------------------------------------------
 
 def test_llm_agrees_not_critical():
     """LLM agrees no one is critical → result stays False."""
-    ctx = _majority_locked_ctx()
+    ctx = _majority_locked_ctx(services={"llm": _MockLLMAgrees()})
 
-    def mock_advisor(context, missing):
-        return {"critical_participants": []}
+    assert _has_critical_unresolved_participants(ctx) is False
 
-    set_critical_participant_advisor(mock_advisor)
-    try:
-        assert _has_critical_unresolved_participants(ctx) is False
-    finally:
-        _teardown()
-
-
-# ---------------------------------------------------------------------------
-# Test: rule-based True → LLM not called
-# ---------------------------------------------------------------------------
 
 def test_llm_not_called_when_rule_says_true():
     """When rule-based returns True, LLM should never be invoked."""
-    ctx = _consent_missing_ctx()
+    mock = _MockLLMTracked()
+    ctx = _consent_missing_ctx(services={"llm": mock})
 
-    # Precondition: rule-based says True
     assert _has_critical_unresolved_rule_based(ctx) is True
+    result = _has_critical_unresolved_participants(ctx)
+    assert result is True
+    assert mock.call_count == 0, f"LLM was called {mock.call_count} times, expected 0"
 
-    call_count = 0
-
-    def mock_advisor(context, missing):
-        nonlocal call_count
-        call_count += 1
-        return {"critical_participants": []}
-
-    set_critical_participant_advisor(mock_advisor)
-    try:
-        result = _has_critical_unresolved_participants(ctx)
-        assert result is True
-        assert call_count == 0, f"LLM was called {call_count} times, expected 0"
-    finally:
-        _teardown()
-
-
-# ---------------------------------------------------------------------------
-# Test: LLM raises exception → fallback to rule-based (False)
-# ---------------------------------------------------------------------------
 
 def test_llm_failure_falls_back():
     """LLM crashes → guard returns rule-based result (False)."""
-    ctx = _majority_locked_ctx()
+    ctx = _majority_locked_ctx(services={"llm": _MockLLMCrashes()})
 
-    def crashing_advisor(context, missing):
-        raise RuntimeError("API timeout")
+    assert _has_critical_unresolved_participants(ctx) is False
 
-    set_critical_participant_advisor(crashing_advisor)
-    try:
-        # Should not crash; should return False (rule-based result)
-        assert _has_critical_unresolved_participants(ctx) is False
-    finally:
-        _teardown()
-
-
-# ---------------------------------------------------------------------------
-# Test: LLM returns invalid data → safe fallback
-# ---------------------------------------------------------------------------
 
 def test_llm_returns_invalid_type():
     """LLM returns non-list → treated as empty → False."""
-    ctx = _majority_locked_ctx()
+    ctx = _majority_locked_ctx(services={"llm": _MockLLMBadType()})
 
-    def bad_advisor(context, missing):
-        return {"critical_participants": "eve"}  # string, not list
-
-    set_critical_participant_advisor(bad_advisor)
-    try:
-        assert _has_critical_unresolved_participants(ctx) is False
-    finally:
-        _teardown()
+    assert _has_critical_unresolved_participants(ctx) is False
 
 
 def test_llm_returns_no_key():
     """LLM returns dict without expected key → empty → False."""
-    ctx = _majority_locked_ctx()
+    ctx = _majority_locked_ctx(services={"llm": _MockLLMNoKey()})
 
-    def bad_advisor(context, missing):
-        return {"other_key": ["eve"]}
-
-    set_critical_participant_advisor(bad_advisor)
-    try:
-        assert _has_critical_unresolved_participants(ctx) is False
-    finally:
-        _teardown()
+    assert _has_critical_unresolved_participants(ctx) is False
 
 
 def test_llm_returns_none():
     """LLM returns None → exception caught → False."""
-    ctx = _majority_locked_ctx()
+    ctx = _majority_locked_ctx(services={"llm": _MockLLMReturnsNone()})
 
-    def bad_advisor(context, missing):
-        return None
-
-    set_critical_participant_advisor(bad_advisor)
-    try:
-        assert _has_critical_unresolved_participants(ctx) is False
-    finally:
-        _teardown()
-
-
-# ---------------------------------------------------------------------------
-# Test: no advisor set → rule-based only
-# ---------------------------------------------------------------------------
-
-def test_no_advisor_set():
-    """When no advisor is registered, guard uses rule-based only."""
-    ctx = _majority_locked_ctx()
-    set_critical_participant_advisor(None)
-
-    # Rule-based says False, no advisor → False
     assert _has_critical_unresolved_participants(ctx) is False
 
 
-# ---------------------------------------------------------------------------
-# Test: LLM returns names not in missing → filtered out
-# ---------------------------------------------------------------------------
+def test_no_llm_in_services():
+    """When no LLM in services, guard uses rule-based only."""
+    ctx = _majority_locked_ctx(services={})
 
-def test_llm_returns_invalid_names():
-    """LLM returns names not in missing list → filtered by OpenAILLM.
-    At the guard level, any non-empty list escalates."""
-    ctx = _majority_locked_ctx()
+    assert _has_critical_unresolved_participants(ctx) is False
 
-    # This advisor returns a name that IS in missing (eve)
-    # plus a name that isn't (alice) — guard just checks len > 0
-    def mock_advisor(context, missing):
-        return {"critical_participants": ["alice", "eve"]}
 
-    set_critical_participant_advisor(mock_advisor)
-    try:
-        # "alice" is not in missing but "eve" is — list is non-empty → True
-        assert _has_critical_unresolved_participants(ctx) is True
-    finally:
-        _teardown()
+def test_llm_returns_mixed_names():
+    """LLM returns both valid and invalid names → non-empty → True."""
+    ctx = _majority_locked_ctx(services={"llm": _MockLLMEscalates()})
+
+    assert _has_critical_unresolved_participants(ctx) is True
 
 
 if __name__ == "__main__":
@@ -236,8 +238,8 @@ if __name__ == "__main__":
         test_llm_returns_invalid_type,
         test_llm_returns_no_key,
         test_llm_returns_none,
-        test_no_advisor_set,
-        test_llm_returns_invalid_names,
+        test_no_llm_in_services,
+        test_llm_returns_mixed_names,
     ]
     for t in tests:
         t()

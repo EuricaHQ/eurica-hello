@@ -151,33 +151,6 @@ def _has_critical_unresolved_rule_based(ctx: DecisionContext) -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# Optional LLM advisory hook for critical participant evaluation.
-#
-# Set via set_critical_participant_advisor(). Called ONLY when rule-based
-# logic returns False (i.e., LLM can only ESCALATE, never de-escalate).
-#
-# The hook receives (context_dict, missing_list) and returns
-# {"critical_participants": [...]}.
-#
-# If no hook is set, or it fails, the guard falls back to rule-based only.
-# ---------------------------------------------------------------------------
-
-_llm_advisor_fn = None
-
-
-def set_critical_participant_advisor(fn):
-    """Register an LLM advisory function for critical participant evaluation.
-
-    fn signature: (context: dict, missing: list[str]) -> dict
-    Expected return: {"critical_participants": [...]}
-
-    Pass None to disable.
-    """
-    global _llm_advisor_fn
-    _llm_advisor_fn = fn
-
-
 def _has_critical_unresolved_participants(ctx: DecisionContext) -> bool:
     """Guard per spec v2.9.2 section 30.
 
@@ -185,8 +158,9 @@ def _has_critical_unresolved_participants(ctx: DecisionContext) -> bool:
     1. Rule-based (deterministic, always runs first)
     2. LLM advisory (optional, only if rule-based returns False)
 
+    LLM is accessed via ctx.services["llm"] (dependency injection).
     LLM can ONLY escalate (mark as critical), never de-escalate.
-    If LLM fails or is not configured → rule-based result stands.
+    If no LLM is injected, or it fails → rule-based result stands.
     """
     responded = set(ctx.responses.keys())
     missing = [p for p in ctx.participants if p not in responded]
@@ -199,8 +173,9 @@ def _has_critical_unresolved_participants(ctx: DecisionContext) -> bool:
     if rule_result:
         return True
 
-    # Optional LLM advisory layer
-    if _llm_advisor_fn is not None:
+    # Optional LLM advisory layer (via dependency injection)
+    llm = ctx.services.get("llm")
+    if llm is not None:
         try:
             compact_context = {
                 "question": ctx.question,
@@ -209,7 +184,7 @@ def _has_critical_unresolved_participants(ctx: DecisionContext) -> bool:
                 "constraints": ctx.constraints,
                 "decision_rule": ctx.decision_rule,
             }
-            result = _llm_advisor_fn(compact_context, missing)
+            result = llm.evaluate_critical_participants(compact_context, missing)
             critical = result.get("critical_participants", [])
             if isinstance(critical, list) and len(critical) > 0:
                 return True

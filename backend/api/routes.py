@@ -10,7 +10,7 @@ from machine.states import State
 from machine.events import Event
 from machine.context import DecisionContext
 from machine.actions import Action, ActionType
-from machine.transition import transition, set_critical_participant_advisor
+from machine.transition import transition
 from llm.openai_llm import OpenAILLM
 import store
 
@@ -18,10 +18,6 @@ router = APIRouter()
 
 # LLM instance — swap implementation here (OpenAILLM, MockLLM, etc.)
 _llm = OpenAILLM()
-
-# Wire LLM advisory into the critical participant guard.
-# LLM can only escalate (mark as critical), never de-escalate.
-set_critical_participant_advisor(_llm.evaluate_critical_participants)
 
 # Maximum system-event iterations to prevent infinite loops
 _MAX_SYSTEM_ITERATIONS = 3
@@ -157,6 +153,9 @@ def post_message(req: MessageRequest):
     """
     # 1. Load
     state, context = store.load(req.decision_id)
+
+    # Inject services into context (dependency injection for guards)
+    context = replace(context, services={"llm": _llm})
 
     # 2. Update context with the incoming message
     if not context.question:

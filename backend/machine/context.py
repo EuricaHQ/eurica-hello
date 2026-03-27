@@ -47,3 +47,7 @@ class DecisionContext:
     # Final outcome
     decision: str | None = None
     rejection_reason: str | None = None
+
+    # Injected services (optional, not serialized)
+    # e.g. {"llm": <LLM instance>}
+    services: dict = field(default_factory=dict)
