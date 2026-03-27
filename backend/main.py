@@ -2,9 +2,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from api.routes import router
-
+# Load .env BEFORE any module that reads os.environ (e.g. OpenAILLM)
 load_dotenv()
+
+from api.routes import router  # noqa: E402
 
 app = FastAPI()
 

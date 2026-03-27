@@ -5,28 +5,35 @@ from dataclasses import replace
 from fastapi import APIRouter
 
 from models.schemas import MessageRequest, MessageResponse
-from interpreter.llm import interpret_message
-from interpreter.signals import map_signals_to_event
+from interpreter.signal_mapper import map_signals_to_event
 from machine.states import State
 from machine.events import Event
 from machine.context import DecisionContext
-from machine.actions import Action
+from machine.actions import Action, ActionType
 from machine.transition import transition
-from executor import execute
+from llm.openai_llm import OpenAILLM
 import store
 
 router = APIRouter()
+
+# LLM instance — swap implementation here (OpenAILLM, MockLLM, etc.)
+_llm = OpenAILLM()
 
 # Maximum system-event iterations to prevent infinite loops
 _MAX_SYSTEM_ITERATIONS = 3
 
 
-def _confirmation_required(ctx: DecisionContext) -> bool:
-    """Mirror of the guard in transition.py.
+# ---------------------------------------------------------------------------
+# Confirmation guard (mirror of machine/transition.py::_confirmation_required)
+#
+# Used ONLY by the system-event loop to decide whether to auto-emit
+# DECISION_CONFIRMED. Must stay in sync with transition.py.
+#
+# Per spec v2.9.1: confirmation_required controls the SOURCE of the
+# DECISION_CONFIRMED event (system vs user), NOT the transition behavior.
+# ---------------------------------------------------------------------------
 
-    Used by the system-event loop to decide whether to auto-confirm.
-    Must stay in sync with machine/transition.py::_confirmation_required.
-    """
+def _confirmation_required(ctx: DecisionContext) -> bool:
     if len(ctx.responses) < ctx.min_participants:
         return True
     if len(ctx.uncertainties) > 0:
@@ -40,6 +47,58 @@ def _confirmation_required(ctx: DecisionContext) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Context helpers
+# ---------------------------------------------------------------------------
+
+def _apply_actions(
+    context: DecisionContext,
+    actions: list[Action],
+    signals: dict,
+) -> DecisionContext:
+    """Merge signal data into context after transition.
+
+    This is the ONLY place where LLM-extracted signals update the context.
+    Actions are recorded but do not alter context here — they describe
+    WHAT should happen, and the LLM response layer handles the HOW.
+    """
+    return replace(
+        context,
+        preferences=context.preferences + signals.get("preferences", []),
+        constraints=context.constraints + signals.get("constraints", []),
+        uncertainties=context.uncertainties + (
+            ["uncertainty"] if signals.get("uncertainty") else []
+        ),
+        objections=context.objections + (
+            ["objection"] if signals.get("objection") else []
+        ),
+    )
+
+
+def _context_to_dict(ctx: DecisionContext) -> dict:
+    """Convert DecisionContext to a plain dict for LLM consumption.
+
+    LLM receives read-only data — no internal types leak out.
+    """
+    return {
+        "decision_id": ctx.decision_id,
+        "question": ctx.question,
+        "participants": ctx.participants,
+        "min_participants": ctx.min_participants,
+        "responses": ctx.responses,
+        "preferences": ctx.preferences,
+        "constraints": ctx.constraints,
+        "uncertainties": ctx.uncertainties,
+        "objections": ctx.objections,
+        "conflicts": ctx.conflicts,
+        "decision": ctx.decision,
+    }
+
+
+# ---------------------------------------------------------------------------
+# System event derivation
+# ---------------------------------------------------------------------------
+
 def _derive_system_event(
     state: State,
     context: DecisionContext,
@@ -52,7 +111,7 @@ def _derive_system_event(
 
     Returns None if no system event should fire.
     """
-    # COLLECTING: check if participation is satisfied → trigger aggregation
+    # COLLECTING: trigger aggregation check (guards decide the outcome)
     if state == State.COLLECTING:
         return Event.AGGREGATION_COMPLETED
 
@@ -62,29 +121,35 @@ def _derive_system_event(
     if state == State.VALIDATING:
         return Event.VALIDATION_COMPLETED
 
-    # Auto-finalize if no confirmation required (clarified interpretation)
+    # Spec v2.9.1: confirmation_required controls SOURCE of event.
+    # If false → system internally emits DECISION_CONFIRMED.
+    # If true → wait for user-triggered DECISION_CONFIRMED.
     if state == State.DECIDING and not _confirmation_required(context):
         return Event.DECISION_CONFIRMED
 
     return None
 
 
+# ---------------------------------------------------------------------------
+# Route
+# ---------------------------------------------------------------------------
+
 @router.post("/message", response_model=MessageResponse)
 def post_message(req: MessageRequest):
     """Single endpoint for the decision loop.
 
-    Flow:
+    Flow (strict separation: LLM = interpretation + language,
+    System = state + decisions):
+
     1. Load state + context
     2. Update context with new message
-    3. Interpret message → Signals
-    4. Map signals → Event
-    5. Transition loop:
-       a. transition(state, event, context)
-       b. Check for system event
-       c. If system event → loop (max _MAX_SYSTEM_ITERATIONS)
-    6. Execute all collected actions → reply
-    7. Persist updated state
-    8. Return response
+    3. LLM interprets message → signals (dict)
+    4. Map signals → event (deterministic, no LLM)
+    5. Transition (state machine decides)
+    6. Apply actions + merge signals into context
+    7. System event loop
+    8. LLM generates response
+    9. Persist + return
     """
     # 1. Load
     state, context = store.load(req.decision_id)
@@ -106,28 +171,21 @@ def post_message(req: MessageRequest):
         participants.append(req.participant)
         context = replace(context, participants=participants)
 
-    # 3. Interpret → Signals
-    signals = interpret_message(req.message)
+    # 3. LLM interprets message → structured signals
+    signals = _llm.interpret(req.message, _context_to_dict(context))
 
-    # 4. Merge signal data into context
-    context = replace(
-        context,
-        preferences=context.preferences + signals.preferences,
-        constraints=context.constraints + signals.constraints,
-        uncertainties=context.uncertainties + signals.uncertainties,
-        objections=context.objections + signals.objections,
-    )
-
-    # 5. Signals → Event (initial, user-driven)
+    # 4. Signals → Event (deterministic mapping, no LLM)
     event = map_signals_to_event(signals)
 
-    # 6. Transition loop (user event + system events)
+    # 5. Transition (state machine decides)
     all_actions: list[Action] = []
-
     next_state, actions, context = transition(state, event, context)
     all_actions.extend(actions)
 
-    # System event loop — allow internal state progression
+    # 6. Apply actions + merge signals into context
+    context = _apply_actions(context, actions, signals)
+
+    # 7. System event loop — allow internal state progression
     for _ in range(_MAX_SYSTEM_ITERATIONS):
         system_event = _derive_system_event(next_state, context)
         if system_event is None:
@@ -141,10 +199,10 @@ def post_message(req: MessageRequest):
         if next_state == prev_state:
             break
 
-    # 7. Execute actions → reply
-    reply = execute(all_actions, context)
+    # 8. LLM generates response
+    reply = _llm.generate(next_state.value, _context_to_dict(context))
 
-    # 8. Persist
+    # 9. Persist
     store.save(req.decision_id, next_state, context)
 
     return MessageResponse(
