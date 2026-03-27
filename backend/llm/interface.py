@@ -25,12 +25,19 @@ class LLM:
 
         Returns:
             Dict of structured signals. Strict schema — ONLY these keys:
+
+            Core (v1):
             - preferences: list[str]
             - constraints: list[str]
             - uncertainty: bool
             - conflict: bool
             - objection: bool
             - avoidance: bool
+
+            Semantic (v2):
+            - flexibility: "high" | "medium" | "low"
+            - preference_strength: "strong" | "weak" | "none"
+            - constraint_type: "hard" | "soft" | "none"
         """
         raise NotImplementedError
 

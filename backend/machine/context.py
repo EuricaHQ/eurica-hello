@@ -34,6 +34,12 @@ class DecisionContext:
     uncertainties: list[str] = field(default_factory=list)
     objections: list[str] = field(default_factory=list)
 
+    # Semantic signal history (v2, populated by interpreter)
+    # Each entry is one signal snapshot per message processed
+    flexibility_signals: list[str] = field(default_factory=list)
+    preference_strength_signals: list[str] = field(default_factory=list)
+    constraint_type_signals: list[str] = field(default_factory=list)
+
     # Aggregation / resolution results (populated by actions later)
     aggregation_result: dict | None = None
     conflicts: list[dict] = field(default_factory=list)

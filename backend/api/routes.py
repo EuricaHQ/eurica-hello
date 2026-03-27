@@ -72,6 +72,15 @@ def _apply_actions(
         objections=context.objections + (
             ["objection"] if signals.get("objection") else []
         ),
+        flexibility_signals=context.flexibility_signals + (
+            [signals["flexibility"]] if "flexibility" in signals else []
+        ),
+        preference_strength_signals=context.preference_strength_signals + (
+            [signals["preference_strength"]] if "preference_strength" in signals else []
+        ),
+        constraint_type_signals=context.constraint_type_signals + (
+            [signals["constraint_type"]] if "constraint_type" in signals else []
+        ),
     )
 
 

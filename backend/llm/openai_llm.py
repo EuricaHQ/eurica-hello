@@ -12,6 +12,16 @@ from llm.interface import LLM
 # No extra fields. Missing keys filled with defaults.
 _SIGNAL_SCHEMA_LISTS = ("preferences", "constraints")
 _SIGNAL_SCHEMA_BOOLS = ("uncertainty", "conflict", "objection", "avoidance")
+_SIGNAL_SCHEMA_ENUMS = {
+    "flexibility": ("high", "medium", "low"),
+    "preference_strength": ("strong", "weak", "none"),
+    "constraint_type": ("hard", "soft", "none"),
+}
+_SIGNAL_ENUM_DEFAULTS = {
+    "flexibility": "medium",
+    "preference_strength": "none",
+    "constraint_type": "none",
+}
 
 _SAFE_DEFAULT: dict = {
     "preferences": [],
@@ -20,6 +30,9 @@ _SAFE_DEFAULT: dict = {
     "conflict": False,
     "objection": False,
     "avoidance": False,
+    "flexibility": "medium",
+    "preference_strength": "none",
+    "constraint_type": "none",
 }
 
 _MODEL = "gpt-4o-mini"
@@ -77,12 +90,28 @@ class OpenAILLM(LLM):
             f"User message: \"{message}\"\n"
             "\n"
             "Return ONLY a JSON object with EXACTLY these keys:\n"
+            "\n"
+            "Core signals:\n"
             "- preferences: list of strings (stated preferences)\n"
             "- constraints: list of strings (hard restrictions: must / cannot)\n"
             "- uncertainty: boolean (user expresses doubt or confusion)\n"
             "- conflict: boolean (user disagrees with existing preferences)\n"
             "- objection: boolean (user raises a strong objection)\n"
             "- avoidance: boolean (user avoids or deflects the decision)\n"
+            "\n"
+            "Semantic signals:\n"
+            "- flexibility: \"high\" | \"medium\" | \"low\"\n"
+            '  high = "egal", "mir passt alles", "anything works"\n'
+            '  medium = partial openness, some flexibility\n'
+            '  low = strict preference, very specific\n'
+            "- preference_strength: \"strong\" | \"weak\" | \"none\"\n"
+            '  strong = "ich will", "auf jeden Fall", "definitely"\n'
+            '  weak = "vielleicht", "could be", "maybe"\n'
+            '  none = no preference expressed\n'
+            "- constraint_type: \"hard\" | \"soft\" | \"none\"\n"
+            '  hard = "muss", "auf keinen Fall", "must", "cannot"\n'
+            '  soft = "lieber nicht", "would prefer not to"\n'
+            '  none = no constraint expressed\n'
             "\n"
             "IMPORTANT: Constraints are hard restrictions (must / cannot). "
             "Uncertainty or hesitation is NOT a constraint.\n"
@@ -105,6 +134,9 @@ class OpenAILLM(LLM):
         for key in _SIGNAL_SCHEMA_BOOLS:
             val = signals.get(key, False)
             result[key] = val if isinstance(val, bool) else False
+        for key, allowed in _SIGNAL_SCHEMA_ENUMS.items():
+            val = signals.get(key, _SIGNAL_ENUM_DEFAULTS[key])
+            result[key] = val if val in allowed else _SIGNAL_ENUM_DEFAULTS[key]
 
         return result
 
