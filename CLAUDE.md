@@ -35,7 +35,7 @@ Warning: This project uses Next.js 16 which has breaking changes. Before editing
 
 ## Architecture
 
-Eurica is a multi-party Decision Coordinator — a system where a group of participants collaboratively reach a decision. The spec in spec/ is the authoritative design document.
+Eurica is a multi-party Decision Coordinator — a system where a group of participants collaboratively reach a decision.
 
 ### Core Principle: LLM is advisory, state machine is authoritative
 
@@ -77,14 +77,63 @@ After a transition, the system may emit additional system events (max 3 iteratio
 ### Mobile (eurica-mobile/)
 - Expo React Native project
 
-## STRICT DEVELOPMENT RULES (CRITICAL)
+## Spec Architecture
 
-### Spec Authority
-- The specification (spec/*.md) is the single source of truth
-- Always follow the latest specification in spec/
+The specification is split into three layers:
+
+### Core Spec (spec/core/)
+Defines system behavior: states, transitions, guards, routing, targeting, interaction_type selection.
+
+### Interaction Spec (spec/interaction/)
+Defines communication behavior: phrasing rules, constraints, allowed/forbidden patterns.
+
+### Meta Spec (spec/meta/)
+Defines separation rules and the contract between Core and Interaction layers.
+
+## Spec Authority
+
+- ALWAYS follow latest Core Spec for: logic, transitions, guards, routing, targeting
+- ALWAYS follow latest Interaction Spec for: message generation, phrasing constraints, allowed/forbidden patterns
+- ALWAYS follow Meta Spec for: separation rules, architectural constraints
+- Always use latest file in each spec directory
+- Do NOT reference outdated spec versions
+- Do NOT hardcode spec assumptions
 - If code and spec differ → ALWAYS follow spec
-- NEVER introduce behavior not explicitly grounded in spec
 - If spec is incomplete or unclear → ask for clarification, do NOT assume
+
+## Separation Enforcement (CRITICAL)
+
+NEVER mix Core and Interaction concerns:
+- NEVER encode phrasing rules in logic
+- NEVER encode logic in prompts or message templates
+
+The interface between both layers is interaction_type ONLY:
+- Core Spec determines interaction_type
+- Interaction Spec determines how interaction_type is phrased
+
+### Communication Rules in Core Spec
+If Core Spec contains communication-related constraints (phrasing rules, tone, message structure):
+- Treat them as Interaction Spec rules
+- Apply them ONLY in message generation (LLM layer)
+- NEVER implement them in logic or transitions
+
+### Implementation Rules
+- Logic must ONLY depend on Core Spec
+- Communication must ONLY depend on Interaction Spec
+- DO NOT hardcode phrasing in targeting or transition logic
+- DO NOT introduce behavioral assumptions outside specs
+- DO NOT merge both layers into a single implementation
+
+### LLM Behavior Constraint
+- LLM output MUST comply with Interaction Spec
+- LLM MUST NOT:
+  - invent phrasing outside allowed patterns
+  - introduce tone/style not defined in Interaction Spec
+  - encode decision logic
+- Enforce Interaction Spec constraints via validation after generation
+- If constraints are violated → regenerate output
+
+## STRICT DEVELOPMENT RULES (CRITICAL)
 
 ### Determinism
 - The system must remain fully deterministic
@@ -95,21 +144,19 @@ After a transition, the system may emit additional system events (max 3 iteratio
 - NEVER change:
   - states
   - transitions
-  - guard logic  
+  - guard logic
   without explicit spec reference
 - Guard priority MUST be preserved exactly
-
-### LLM Constraints
-- LLM is interpretation only
-- LLM must NOT:
-  - decide transitions
-  - override system logic
-  - introduce new behavior
 
 ### Implementation Style
 - Prefer minimal, surgical changes
 - DO NOT refactor broadly unless explicitly requested
 - Show diffs before large changes
+
+### Spec Compliance (Implementation Detail)
+- Incomplete solutions must NOT be finalized, even if compatible
+- When completeness is uncertain → prefer clarification over decision
+- Do NOT collapse multi-dimensional inputs into a single flat value
 
 ### Testing Discipline
 - Always update tests when behavior changes

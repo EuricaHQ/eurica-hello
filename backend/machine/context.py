@@ -50,11 +50,13 @@ class DecisionContext:
     requires_initiator_approval: bool = False
     initiator: str | None = None
 
-    # Dimension governance (spec v2.10.9)
+    # Dimension governance (spec v2.10.9 / v2.11.0)
     # expected_dimensions: authoritative — drives completeness routing
     # proposed_dimensions: non-authoritative — carried in context only, no effect on logic
+    # framing_executed: at-most-once constraint for framing flow
     expected_dimensions: list[str] | None = None
     proposed_dimensions: list[str] | None = None
+    framing_executed: bool = False
 
     # Final outcome
     decision: str | None = None

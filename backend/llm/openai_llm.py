@@ -174,6 +174,47 @@ class OpenAILLM(LLM):
             return f"[{state}] How would you like to proceed?"
 
     # -----------------------------------------------------------------
+    # generate_framing()
+    # -----------------------------------------------------------------
+
+    def generate_framing(self, payload: dict) -> str:
+        """Generate a single short framing question.
+
+        Spec v2.11.0: neutral, concise, no technical terms.
+        Pattern: "Option A oder Option B?"
+        """
+        dims = payload.get("proposed_dimensions", [])
+        dims_str = ", ".join(dims)
+
+        prompt = (
+            "Generate a single short question asking whether the group "
+            "decision should cover all of these aspects or only some: "
+            f"{dims_str}\n"
+            "\n"
+            "Rules:\n"
+            "- Exactly ONE question, ONE sentence\n"
+            "- Simple everyday language\n"
+            "- No technical terms, no jargon\n"
+            "- Neutral — do NOT suggest that all aspects are needed\n"
+            "- Use the pattern: 'A oder auch B?'\n"
+            "- German language preferred\n"
+            "\n"
+            "Examples for [day, time]:\n"
+            "- Sollen wir nur den Tag festlegen oder auch die Uhrzeit?\n"
+            "- Geht es nur um den Tag oder auch um die Uhrzeit?\n"
+            "\n"
+            "Return ONLY the question. No explanation. No quotes."
+        )
+
+        try:
+            return self._call(prompt).strip().strip('"')
+        except Exception:
+            # Fallback: deterministic template
+            if len(dims) >= 2:
+                return f"Geht es nur um {dims[0]} oder auch um {', '.join(dims[1:])}?"
+            return "Was genau sollen wir festlegen?"
+
+    # -----------------------------------------------------------------
     # evaluate_critical_participants()
     # -----------------------------------------------------------------
 

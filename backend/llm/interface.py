@@ -53,6 +53,25 @@ class LLM:
         """
         raise NotImplementedError
 
+    def generate_framing(self, payload: dict) -> str:
+        """Generate a framing question from proposed dimensions.
+
+        Spec v2.11.0 framing UX rules:
+        - Single short question, max 1 sentence
+        - Simple everyday language, no technical terms
+        - Neutral — must NOT suggest dimensions are required
+        - Pattern: "Option A oder Option B?"
+
+        Args:
+            payload: Dict with keys:
+                - proposed_dimensions: list[str]
+                - target: str (participant name)
+
+        Returns:
+            A single concise framing question string.
+        """
+        raise NotImplementedError
+
     def evaluate_critical_participants(
         self, context: dict, missing: list[str],
     ) -> dict:

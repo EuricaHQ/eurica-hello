@@ -52,6 +52,13 @@ class MockLLM(LLM):
     def generate(self, state: str, context: dict) -> str:
         return f"[{state}] What is your preference?"
 
+    def generate_framing(self, payload: dict) -> str:
+        dims = payload.get("proposed_dimensions", [])
+        if len(dims) >= 2:
+            first, rest = dims[0], dims[1:]
+            return f"Geht es nur um {first} oder auch um {', '.join(rest)}?"
+        return "Was genau sollen wir festlegen?"
+
     def evaluate_critical_participants(
         self, context: dict, missing: list[str],
     ) -> dict:
