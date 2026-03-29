@@ -100,6 +100,19 @@ Defines separation rules and the contract between Core and Interaction layers.
 - Do NOT hardcode spec assumptions
 - If code and spec differ → ALWAYS follow spec
 - If spec is incomplete or unclear → ask for clarification, do NOT assume
+## Spec Governance (CRITICAL)
+
+- /spec is authoritative and controlled by Spec Master
+- NEVER create or modify spec files autonomously
+- Spec files may ONLY be created or updated when:
+  → an explicit instruction is given to implement a provided spec
+- In that case:
+  → write the spec EXACTLY as provided
+  → do NOT modify, extend, interpret, or restructure it
+- NEVER increment spec versions unless explicitly instructed
+- Any improvements, extensions, or ideas MUST be:
+  → written to /spec/proposals/
+  → NEVER directly applied to spec files
 
 ## Separation Enforcement (CRITICAL)
 
